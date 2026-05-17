@@ -22,9 +22,11 @@ Browser-based editor for **JavaScript**, **Python**, and **C#**. Each language h
 ## Table of contents
 
 1. [Overview](#1-overview)
-2. [Quick start](#2-quick-start)
+2. [Quick start](#2-quick-start)  
+   - [2.1 Windows setup script](#21-windows-setup-script-setup-and-testbat)
 3. [Configuration](#3-configuration)
-4. [Using the application](#4-using-the-application)
+4. [Using the application](#4-using-the-application)  
+   - [4.3 How Run works](#43-how-run-works-all-three-languages)
 5. [API reference](#5-api-reference)
 6. [Project layout](#6-project-layout)
 7. [Build and deployment](#7-build-and-deployment)
@@ -111,6 +113,36 @@ dotnet tool install -g csharpier
 
 Restart `npm run dev` after changing `server/.env`.
 
+### 2.1 Windows setup script (`setup-and-test.bat`)
+
+On **Windows**, you can run the repo-root batch file after cloning to install npm packages, optional formatters, and automated checks:
+
+```powershell
+.\setup-and-test.bat
+```
+
+| Step | What it does | Installs Python / .NET? |
+|------|----------------|-------------------------|
+| **[1–3/7]** | `npm install` in **root**, **server**, and **client** | No |
+| **[4/7]** | **Black** for Python Format — `pip install black` **only if** `py` or `python` is already on PATH | No Python installer |
+| **[5/7]** | **CSharpier** — `dotnet tool install -g csharpier` **only if** `dotnet` is already on PATH | No .NET SDK installer |
+| **[6/7]** | Server scripts: `test:strip-ansi`, `test:run-error-kind`, `test:workspace-env`, `test:run-csharp` (C# test **skips** if no SDK) | No |
+| **[7/7]** | `npm run build --prefix client` (Vite/Monaco smoke test) | No |
+
+**Warnings only (not created by the script):** if `server\.env` is missing, the script reminds you to copy `server\.env.example` and set **`GEMINI_API_KEY`**.
+
+**Not covered by the script — check manually after it finishes:**
+
+| Check | Why |
+|-------|-----|
+| `server\.env` + **`GEMINI_API_KEY`** | Required for Chat / Agent / Translate |
+| `npm run dev` → http://localhost:5173 | Full app (API + UI) |
+| **Run** in the UI for JS / Python / C# | Python Run needs **Python 3**; C# Run needs **.NET SDK** (not installed by the `.bat`) |
+| **Format** for `.py` / `.cs` | Black / CSharpier (script tries to install them only when Python / `dotnet` already exist) |
+| **Agent** / **Translate** | Needs a valid Gemini key and an active file |
+
+Equivalent manual install (any OS): `npm run install:all`, then the four `npm run test:*` commands under `server/`.
+
 ---
 
 ## 3. Configuration
@@ -186,7 +218,108 @@ Languages are defined in **`shared/workspaceEnvironments.js`** (`WORKSPACE_ENVIR
 - **Run** — same file gating. Output panel shows duration, **Timeout** / error labels, stdout vs stderr-style **error** text. ANSI escape sequences are stripped server-side.
 - **Export ZIP** — timestamped archive (`llm-workspace-YYYYMMDD-HHMM.zip`) with **all** environments, not only the active one.
 
-### 4.3 AI chat (Chat, Agent, Translate)
+### 4.3 How Run works (all three languages)
+
+In short: only the **editor** runs in the browser. When you press **Run**, the **active file’s text** is sent to the **Express server on your machine** (`POST /run`), and the code executes **there**—in a way that depends on the language. The result (output / error) comes back and appears in the **Output** panel.
+
+```
+[Browser]   active file content + language (js / python / csharp)
+     ↓  POST /run
+[Express on your PC]   runs the code
+     ↓  JSON: output, error, timeout metadata, …
+[Browser]   Output panel
+```
+
+All three languages use a **wall-clock limit** (default **5 seconds**). Infinite loops or slow C# compiles can end with a **Timeout** label.
+
+#### What happens every time
+
+1. Select the language in the top bar (JavaScript / Python / C#).
+2. Have a valid file open (e.g. `main.py`).
+3. **Run** sends the file’s **full content** and the **`environment`** id to the server.
+4. The server runs it and returns:
+   - **`output`** — e.g. `console.log` / `print` / `Console.WriteLine` text
+   - **`error`** — runtime message, traceback, build errors, or timeout text
+
+Code does **not** run on other users’ machines or in Google’s cloud—it runs on the host where **`npm run dev`** (the API) is running.
+
+#### JavaScript (`*.js`)
+
+The server runs the code in an isolated **sandbox** (**vm2**). This is not full Node.js: no filesystem, no `require`—only a stub **`console`** whose output is collected.
+
+There is no separate compiler executable; the JS engine evaluates the string in memory (like a small, restricted Node).
+
+| You write | You see |
+|-----------|---------|
+| `console.log("hello")` | **output:** `hello` |
+| Syntax error | **error** with message |
+| Infinite loop | **Timeout** after ~5 s (configurable) |
+
+**Setup on a new PC:** Node.js + `npm install` is enough for JS Run—no extra install.
+
+#### Python (`*.py`)
+
+The server starts a **real Python interpreter** on the machine (`python` or `py`) and feeds your editor text on **stdin**—as if you pasted the script into a terminal.
+
+Python is **interpreted** at run time (no separate “Build” step like C#). You still need **Python 3 installed** where the server runs.
+
+| You write | You see |
+|-----------|---------|
+| `print("hello")` | **output** |
+| `raise ValueError(...)` | traceback in **error** |
+| Infinite loop | **Timeout** |
+
+**Setup:** Python 3 on `PATH`. If **Run** works but **Format** does not, Python is present but **Black** is not—install with `pip install black` (or use `setup-and-test.bat` on Windows when Python is already installed).
+
+#### C# (`*.cs`) — compiled language
+
+C# must be **compiled** before it can run.
+
+On **every Run**, the server:
+
+1. Creates a **temporary folder** under the OS temp directory (`llm-csharp-run-...`).
+2. Writes your code as **`Program.cs`** plus a small **`RunSnippet.csproj`**.
+3. Runs **`dotnet run`** (part of the **.NET SDK**).
+4. **`dotnet run`** **compiles** the project, then **starts** the console app.
+5. Deletes the temp folder in a **`finally`** block when the request finishes.
+
+**Why it feels slower:** each Run is **compile + run**, not just “execute text”. The default **5 s** limit is often tight; raise **`RUN_CSHARP_TIMEOUT_MS`** in `server/.env` if needed.
+
+**What the file must contain:** a **self-contained console program**—e.g. `class Program` with `static void Main(...)`. A lone method without `Main` yields compiler errors (**CS####** in **error**).
+
+| You write | You see |
+|-----------|---------|
+| `Console.WriteLine("hello")` | **output** |
+| Syntax / compile error | **error** (often build output) |
+| No .NET SDK | `dotnet not found` |
+
+**Setup:** install the **[.NET SDK](https://dotnet.microsoft.com/download)** (`dotnet` on PATH). **CSharpier** (Format) is a **separate** global tool: `dotnet tool install -g csharpier`.
+
+#### Comparison (for explaining to others)
+
+| | **JavaScript** | **Python** | **C#** |
+|---|----------------|------------|--------|
+| **Where it runs** | Server sandbox (vm2) | Server, real Python | Server, `dotnet run` |
+| **Extra install for Run** | No (Node is enough) | Python 3 | .NET SDK |
+| **Compilation** | No (interpreted) | No separate build step | **Yes, every Run** |
+| **Typical output** | `console.log` | `print`, stderr | `Console.WriteLine`, build errors |
+| **Common issue on new PC** | — | Python not on PATH | Missing `dotnet` or timeout |
+| **Format tool (separate)** | Prettier (browser) | Black (`pip`) | CSharpier (`dotnet tool`) |
+
+**One sentence each**
+
+- **JS:** The server runs your file in a restricted mini-JavaScript environment and returns captured `console` output.
+- **Python:** The server passes your file text to the local Python interpreter as a script.
+- **C#:** The server builds a temp project, **.NET compiles and runs it**, then deletes the temp files.
+
+**Team reminders**
+
+1. **Run ≠ Format** — Run needs Python / .NET for those languages; Format also needs **Black** / **CSharpier**.
+2. **Each developer runs on their own machine** — clone the repo and install Python / .NET on **that** PC for those features.
+3. **C#:** test with a minimal `Program` + `Main` before debugging complex code.
+4. **Gemini chat does not execute code** — only the **Run** button calls `POST /run`.
+
+### 4.4 AI chat (Chat, Agent, Translate)
 
 **Modes**
 
@@ -216,7 +349,7 @@ sequenceDiagram
   UI->>UI: preview diff → accept or reject
 ```
 
-### 4.4 Workspace state (reference)
+### 4.5 Workspace state (reference)
 
 | Topic | Detail |
 |-------|--------|
@@ -227,7 +360,7 @@ sequenceDiagram
 | Editor remount | `CodeEditor` `key` includes `environment` |
 | Validation | `shared/workspaceFilename.js` + per-app wrappers |
 
-### 4.5 Testing Run output (ANSI cleanup)
+### 4.6 Testing Run output (ANSI cleanup)
 
 **Automated (from `server/`):**
 
@@ -317,6 +450,7 @@ Unknown routes: **404** `{ error: "Not found" }`.
 ```
 .
 ├── agent-memory.md              # Implementation changelog (append-only)
+├── setup-and-test.bat           # Windows: npm install + formatters + tests (see §2.1)
 ├── package.json                 # Root scripts: dev, build, install:all
 ├── README.md
 ├── shared/
@@ -404,7 +538,7 @@ npm start              # server only (root script → server/index.js)
 |---------|----------------|
 | “Could not reach API” / fetch failed | API running on **3001**; dev proxy in `vite.config.js` |
 | CORS errors | `CLIENT_ORIGIN` matches the UI origin |
-| `npm run dev` fails | `npm run install:all` from repo root |
+| `npm run dev` fails | `npm run install:all` from repo root, or Windows: `setup-and-test.bat` |
 | Chat 500 “Server configuration” | `GEMINI_API_KEY` in `server/.env` |
 | Chat 401 / 403 | Invalid or disabled API key |
 | Chat 400 on `files` | Paths must match environment extension (`*.js` / `*.py` / `*.cs`) |

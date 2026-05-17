@@ -193,6 +193,11 @@ It must NOT describe intended features, only implemented changes.
 - **`client/src/App.jsx`**: removed **gist strip** bar under editor header (duplicate of **Copy snippet**); gist copy remains in explorer + header.
 - **`client/src/workspaceSnippet.js`**: removed unused **`gistSnippetPreviewLine`**.
 
+### 2026-05-15 — README: How Run works (EN) + setup-and-test.bat (§2.1)
+
+- **`README.md`**: English **§4.3 How Run works** (JS / Python / C# flow for teammates); **§2.1** documents **`setup-and-test.bat`** (npm root/server/client, Black/CSharpier when tools exist, server tests, client build; manual checklist).
+- **`setup-and-test.bat`**: repo-root Windows onboarding script (not in prior memory).
+
 ### 2026-05-15 — Chat env normalization (all languages incl. C# Agent/Translate)
 
 - **`shared/workspaceEnvironments.js`**: **`normalizeWorkspaceEnvironmentOrNull`**, **`workspaceMetaFor`**, aliases (`javascript`, `c#`, …), **`normalizeWorkspaceEnvironmentFromBody`**, per-env UI hints (`formatTitle`, `runTitle`, …).
